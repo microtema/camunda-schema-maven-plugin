@@ -6,7 +6,7 @@
 
     <groupId>de.microtema</groupId>
     <artifactId>camunda-schema-maven-plugin</artifactId>
-    <version>2.0.5-SNAPSHOT</version>
+    <version>2.0.5</version>
     <packaging>maven-plugin</packaging>
 
     <name>camunda-schema-maven-plugin Maven Mojo</name>
