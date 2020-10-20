@@ -1,5 +1,6 @@
 package de.microtema.maven.plugin.camunda.schema;
 
+import lombok.SneakyThrows;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.maven.plugin.AbstractMojo;
@@ -13,76 +14,47 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
 import java.io.File;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.nio.charset.Charset;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @Mojo(name = "generate", defaultPhase = LifecyclePhase.VALIDATE)
 public class CamundaDbSchemaGeneratorMojo extends AbstractMojo {
 
     static final String RESOURCE_PATTERN = "classpath:org/camunda/bpm/engine/db/create/activiti.%s.*.sql";
 
-    static final List<String> SQL_SCRIPT_ORDER = Arrays.asList(
-            "activiti.oracle.create.engine.sql",
-            "activiti.oracle.create.history.sql",
-            "activiti.oracle.create.identity.sql",
-            "activiti.oracle.create.case.engine.sql",
-            "activiti.oracle.create.case.history.sql",
-            "activiti.oracle.create.decision.engine.sql",
-            "activiti.oracle.create.decision.history.sql"
+    static final Pattern CREATE_TABLE_PATTERN = Pattern.compile("create table\\s([A-za-z0-9\\.\\$\\{\\}]*)\\s.*");
+
+    static final String SQL_SCRIPT_PATTERN = "activiti.%s.create.%s.sql";
+
+    static final List<String> CATEGORIES = Arrays.asList(
+            "engine",
+            "history",
+            "identity",
+            "case.engine",
+            "case.history",
+            "decision.engine",
+            "decision.history"
     );
 
-    static final String GRANT_TABLE_TEMPLATE = "" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_GE_PROPERTY TO userName;        \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_GE_BYTEARRAY TO userName;       \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_GE_SCHEMA_LOG TO userName;      \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RE_DEPLOYMENT TO userName;      \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_EXECUTION TO userName;       \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_JOB TO userName;             \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_JOBDEF TO userName;          \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RE_PROCDEF TO userName;         \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_TASK TO userName;            \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_IDENTITYLINK TO userName;    \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_VARIABLE TO userName;        \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_EVENT_SUBSCR TO userName;    \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_INCIDENT TO userName;        \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_AUTHORIZATION TO userName;   \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_FILTER TO userName;          \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_METER_LOG TO userName;       \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_EXT_TASK TO userName;        \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_BATCH TO userName;           \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_PROCINST TO userName;        \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_ACTINST TO userName;         \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_TASKINST TO userName;        \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_VARINST TO userName;         \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_DETAIL TO userName;          \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_IDENTITYLINK TO userName;    \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_COMMENT TO userName;         \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_ATTACHMENT TO userName;      \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_OP_LOG TO userName;          \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_INCIDENT TO userName;        \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_JOB_LOG TO userName;         \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_BATCH TO userName;           \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_HI_EXT_TASK_LOG TO userName;    \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_ID_GROUP TO userName;           \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_ID_MEMBERSHIP TO userName;      \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_ID_USER TO userName;            \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_ID_INFO TO userName;            \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_ID_TENANT TO userName;          \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_ID_TENANT_MEMBER TO userName;   \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RE_CASE_DEF TO userName;        \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RE_DECISION_DEF TO userName;    \n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RE_DECISION_REQ_DEF TO userName;\n" +
-            "GRANT SELECT,INSERT,UPDATE,DELETE ON ACT_RU_CASE_EXECUTION TO userName; ";
+    static final String GRANT_TABLE_TEMPLATE = "GRANT SELECT,INSERT,UPDATE,DELETE ON %s TO %s;";
 
-    private final Log log = new SystemStreamLog();
+    final Log log = new SystemStreamLog();
+
+    final Set<String> tableNames = new HashSet<>();
 
     @Parameter(property = "schema", defaultValue = "oracle")
     String schema = "oracle";
@@ -107,31 +79,27 @@ public class CamundaDbSchemaGeneratorMojo extends AbstractMojo {
         logMessage("Generate Camunda DB Schema " + schema + " for user " + userName + " -> " + outputPath);
     }
 
+    @SneakyThrows
     void generateSQlScriptFile(String sql) {
         try (PrintWriter out = new PrintWriter(outputPath)) {
             out.println(sql);
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
         }
     }
 
+    @SneakyThrows
     void preExecute() {
 
-        try {
-            File currentFile = new File("").getCanonicalFile();
+        File currentFile = new File("").getCanonicalFile();
 
-            File outputPathFile = new File(currentFile, outputPath);
+        File outputPathFile = new File(currentFile, outputPath);
 
-            File parentFile = outputPathFile.getParentFile();
+        File parentFile = outputPathFile.getParentFile();
 
-            if (!parentFile.exists()) {
-                parentFile.mkdirs();
-            }
-
-            outputPath = outputPathFile.getAbsolutePath();
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
+        if (!parentFile.exists()) {
+            parentFile.mkdirs();
         }
+
+        outputPath = outputPathFile.getAbsolutePath();
     }
 
     void logMessage(String message) {
@@ -140,6 +108,7 @@ public class CamundaDbSchemaGeneratorMojo extends AbstractMojo {
         log.info("+----------------------------------+");
     }
 
+    @SneakyThrows
     Collection<Resource> getResources() {
 
         PathMatchingResourcePatternResolver patternResolver = new PathMatchingResourcePatternResolver(DelegateExecutionContext.class.getClassLoader());
@@ -148,19 +117,27 @@ public class CamundaDbSchemaGeneratorMojo extends AbstractMojo {
 
         String resourcePattern = String.format(RESOURCE_PATTERN, schema);
 
-        try {
+        Stream.of(patternResolver.getResources(resourcePattern)).forEach(it -> map.put(it.getFilename(), it));
 
-            Arrays.asList(patternResolver.getResources(resourcePattern)).forEach(it -> map.put(it.getFilename(), it));
-
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
-        List<Resource> resources = SQL_SCRIPT_ORDER.stream().map(map::get).collect(Collectors.toList());
+        List<Resource> resources = CATEGORIES.stream().map(this::getSqlScriptName).map(map::get).collect(Collectors.toList());
 
         resources.forEach(it -> log.info("Read SQL script from component '" + getComponent(it.getFilename(), schema) + "' with resource -> " + it.getFilename()));
 
         return resources;
+    }
+
+    String getSqlScriptName(String categoryName) {
+
+        return String.format(SQL_SCRIPT_PATTERN, schema, categoryName);
+    }
+
+    String getGrantTableScript() {
+
+        List<String> orderedTableNames = new ArrayList<>(tableNames);
+
+        Collections.sort(orderedTableNames);
+
+        return orderedTableNames.stream().map(it -> String.format(GRANT_TABLE_TEMPLATE, it, userName)).collect(Collectors.joining("\n"));
     }
 
     String getComponent(String filename, String schema) {
@@ -168,6 +145,7 @@ public class CamundaDbSchemaGeneratorMojo extends AbstractMojo {
         return filename.replace("activiti." + schema + ".create.", "").replace(".sql", StringUtils.EMPTY);
     }
 
+    @SneakyThrows
     String getSqlScript(Collection<Resource> resources) {
 
         StringBuilder builder = new StringBuilder();
@@ -175,23 +153,22 @@ public class CamundaDbSchemaGeneratorMojo extends AbstractMojo {
         for (Resource resource : resources) {
 
             try (InputStream is = resource.getInputStream()) {
+
                 String sql = IOUtils.toString(is, Charset.defaultCharset());
+
+                String[] lines = sql.split("\n");
+
+                Stream.of(lines).map(CREATE_TABLE_PATTERN::matcher).filter(Matcher::matches).map(it -> it.group(1)).forEach(tableNames::add);
+
                 builder.append(sql);
-            } catch (Exception e) {
-                throw new IllegalStateException(e);
             }
         }
 
-        String grantTableTemplate = getGrantTableTemplate();
+        String grantTableScript = getGrantTableScript();
 
         builder.append("\n");
-        builder.append(grantTableTemplate);
+        builder.append(grantTableScript);
 
         return builder.toString();
-    }
-
-    String getGrantTableTemplate() {
-
-        return GRANT_TABLE_TEMPLATE.replaceAll("userName", userName);
     }
 }
